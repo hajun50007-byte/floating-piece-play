@@ -1,0 +1,1895 @@
+<!DOCTYPE html>
+<html lang="ko">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
+		<title>Floating Piece</title>
+		<style>
+html, body, #canvas {
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+body {
+	color: white;
+	background-color: black;
+	overflow: hidden;
+	touch-action: none;
+}
+
+#canvas {
+	display: block;
+}
+
+#canvas:focus {
+	outline: none;
+}
+
+/* 로딩 화면 (4단계 손질 1 A-7). 게임 위를 덮었다가 다 되면 스르륵 사라져요 */
+#fp-load {
+	position: fixed;
+	left: 0;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	overflow: hidden;
+	background-color: #0b1530;
+	z-index: 1;
+	touch-action: none;
+	-webkit-user-select: none;
+	user-select: none;
+	-webkit-touch-callout: none;
+	-webkit-tap-highlight-color: transparent;
+}
+
+#fp-load.first {
+	background-color: #000000;
+}
+
+#fp-loader {
+	position: absolute;
+	image-rendering: crisp-edges;
+	image-rendering: pixelated;
+}
+
+#status-notice {
+	display: none;
+	position: absolute;
+	left: 2rem;
+	right: 2rem;
+	top: 40%;
+	background-color: #5b3943;
+	border-radius: 0.5rem;
+	border: 1px solid #9b3943;
+	color: #e0e0e0;
+	font-family: 'Noto Sans', 'Droid Sans', Arial, sans-serif;
+	line-height: 1.3;
+	overflow: hidden;
+	padding: 1rem;
+	text-align: center;
+	z-index: 2;
+}
+		</style>
+		<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+
+		<script>
+	(function () {
+		function send(kind, msg) {
+			try {
+				new Image().src = '/_log?k=' + encodeURIComponent(kind)
+					+ '&m=' + encodeURIComponent(String(msg).slice(0, 400))
+					+ '&t=' + Date.now();
+			} catch (e) {}
+		}
+		var gl = null;
+		try { gl = document.createElement('canvas').getContext('webgl2'); } catch (e) {}
+		send('시작', 'secure=' + window.isSecureContext + ' webgl2=' + !!gl
+			+ ' 화면=' + screen.width + 'x' + screen.height);
+		window.addEventListener('error', function (e) {
+			send('에러', (e.message || '?') + ' @' + (e.filename || '') + ':' + (e.lineno || ''));
+		});
+		window.addEventListener('unhandledrejection', function (e) {
+			send('거부', (e.reason && (e.reason.message || e.reason)) || '?');
+		});
+		var n = 0;
+		var iv = setInterval(function () {
+			n++;
+			var c = document.getElementById('canvas');
+			var st = document.getElementById('status-notice');
+			send('상태', (n * 5) + '초 canvas=' + (c ? c.width + 'x' + c.height : '없음')
+				+ ' 안내문=' + ((st && st.textContent.trim().slice(0, 120)) || '없음'));
+			if (n >= 8) { clearInterval(iv); }
+		}, 5000);
+	}());
+	</script>
+<script>window.FP_BUILD = "10-11 04:03";</script></head>
+	<body>
+		<canvas id="canvas">
+			Your browser does not support the canvas tag.
+		</canvas>
+
+		<noscript>
+			Your browser does not support JavaScript.
+		</noscript>
+
+		<div id="fp-load">
+			<canvas id="fp-loader"></canvas>
+			<div id="status-notice"></div>
+		</div>
+
+		<script src="index.js"></script>
+		<script>
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"emscriptenPoolSize":8,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":3317028,"index.wasm":37902138},"focusCanvas":true,"gdextensionLibs":[],"godotPoolSize":4};
+const GODOT_THREADS_ENABLED = false;
+// 받는 진행은 로딩 화면으로 (엔진을 만들 때 넣어야 받기에 쓰여요)
+GODOT_CONFIG['onProgress'] = function (current, total) {
+	fpLoader.progress(current, total);
+};
+const engine = new Engine(GODOT_CONFIG);
+
+// [버거 팔자 수정 2] http 에서도 소리 나게 (#261, 조각 6)
+// Godot 4.7.2 는 소리를 켤 때 ctx.audioWorklet.addModule(...) 을 확인 없이 부릅니다
+// (GodotAudio.init — "소리 파일 재생 위치"를 재는 워클릿). audioWorklet 은 보안 연결에서만 있어서
+// http 로 열면 그 줄에서 죽고 게임이 아예 안 뜹니다.
+// -> 보안 연결이 아닐 때만 "워클릿 없음" 이라고 답하는 껍데기를 달아서 그 줄을 지나가게 합니다.
+// 실제 소리는 project.godot 의 driver.web="ScriptProcessor" 로 나갑니다 (보안 연결 필요 없음).
+// 워클릿이 있어야 하는 "Sample" 재생 방식은 default_playback_type.web=0(Stream) 으로 안 씁니다.
+(function () {
+	if (window.isSecureContext) {
+		return;
+	}
+	const Base = window.BaseAudioContext || window.AudioContext || window.webkitAudioContext;
+	if (!Base || 'audioWorklet' in Base.prototype) {
+		return;
+	}
+	const stub = {
+		addModule: function () {
+			const p = Promise.reject(new Error('AudioWorklet 없음 (보안 연결 아님)'));
+			p.catch(function () {}); // 콘솔에 "처리 안 된 오류"로 뜨지 않게
+			return p;
+		},
+	};
+	Object.defineProperty(Base.prototype, 'audioWorklet', {
+		configurable: true,
+		get: function () {
+			return stub;
+		},
+	});
+}());
+
+// ─────────────────────────────────────────────────────────────
+// 로딩 화면 (4단계 손질 1 A-7, 하준 "나 · 조각이 켜짐" + 만질 수 있는 조각)
+//   남색 바다에 꺼진 조각 5~10개(열 때마다 무작위, 손질 2 하준)가 다른 자리에 흩어져 있어요. 가운데 "둥둥 피스" + 퍼센트.
+//   조각은 그 개수만큼 이어진 아무 모양 뗏목을 잘라서, 다 붙이면 뗏목 하나가 돼요.
+//   손가락으로 끌어서 맞는 모양끼리 맞대면 붙고 물결 (게임과 같은 뗏목 모양 물결). 붙어도 불은 안 켜져요.
+//   불은 로딩만큼 따로: 무작위 차례로 한 조각씩, 아래부터 차올라요. 다 켜지면 살짝 반짝.
+//   끌기는 게임 물 계산 그대로 (늦게 따라오고, 잡은 데를 따라 돌고, 놓으면 미끄러지다 멈춤). 처음엔 ±15° 기울어져 있어요.
+//   조각 색 = 1 ~ 내 가장 높은 단계 중 무작위. 물결은 게임처럼 1초에 20번만 움직여요 (일부러 끊겨 보이게).
+//   다 받으면 100% → 불이 다 켜지고 → 그 화면이 그려진 뒤 엔진을 켜요 (켜지는 동안 화면이 멈춰요).
+//   게임이 첫 화면을 그리면 모든 조각이 제 모양대로 물결을 내며 게임으로 스르륵.
+//   처음 실행(저장 없음 = 게임이 시작 연출을 하는 조건)은 검정 바탕에 작은 퍼센트만.
+// 게임 엔진이 켜지기 **전에** 도는 웹 페이지라 게임 코드를 못 써요 → 조각 모양(scripts/piece_shape.gd)·
+// 색칠(shaders/piece_view.gdshader)·물결(shaders/wake_view.gdshader, scripts/burst.gd)·끌기(scripts/drag.gd 물 계산)를 여기 그대로 옮겼어요.
+// 그쪽을 바꾸면 여기도 같이 바꿔요 (함정모음). 글자는 tools/make_loader_art.gd 가 픽셀 줄로 넣어요.
+// ─────────────────────────────────────────────────────────────
+// FP_ART 시작 (tools/make_loader_art.gd 가 이 줄을 바꿔요)
+const FP_ART = {"glyphs":{"%":{"adv":10,"rows":[".........",".##.....#","#..#...#.","#..#..#..",".##..#...","....#....","...#..##.","..#..#..#",".#...#..#","#.....##.","........."],"x":0},"0":{"adv":8,"rows":["..###..",".#...#.","#.....#","#.....#","#.....#","#.....#","#.....#","#.....#","#.....#",".#...#.","..###.."],"x":0},"1":{"adv":6,"rows":[".#.","##.",".#.",".#.",".#.",".#.",".#.",".#.",".#.",".#.","###"],"x":1},"2":{"adv":8,"rows":["..###..",".#...#.","#.....#","......#",".....#.","...##..","..#....",".#.....","#......","#......","#######"],"x":0},"3":{"adv":8,"rows":["..###..",".#...#.","#.....#","......#",".....#.","..###..",".....#.","......#","#.....#",".#...#.","..###.."],"x":0},"4":{"adv":8,"rows":["....##.","...#.#.","...#.#.","..#..#.","..#..#.",".#...#.",".#...#.","#....#.","#######",".....#.",".....#."],"x":0},"5":{"adv":8,"rows":["#######","#......","#......","#......","#.###..","##...#.","......#","......#","#.....#",".#...#.","..###.."],"x":0},"6":{"adv":8,"rows":["...##..","..#....",".#.....",".#.....","#.###..","##...#.","#.....#","#.....#","#.....#",".#...#.","..###.."],"x":0},"7":{"adv":8,"rows":["#######","......#","......#",".....#.",".....#.","....#..","....#..","...#...","...#...","..#....","..#...."],"x":0},"8":{"adv":8,"rows":["..###..",".#...#.","#.....#","#.....#",".#...#.","..###..",".#...#.","#.....#","#.....#",".#...#.","..###.."],"x":0},"9":{"adv":8,"rows":["..###..",".#...#.","#.....#","#.....#","#.....#",".#...##","..###.#",".....#.",".....#.","....#..","..##..."],"x":0}},"title":{"rows":[".#########...#########.......#######..#.......#.....",".#...........#................#...#...#.......#.....",".#...........#................#...#...#.......#.....",".#########...#########........#...#...#......#.#....","..............................#...#...#.....#...#...","###########.###########.......#...#...#....#.....#..",".....#...........#............#...#...#...#.......#.","..#######.....#######.........#...#...#.............",".#.......#...#.......#........#...#...#.............",".#.......#...#.......#.......#######..#..###########","..#######.....#######.................#............."]}};
+// FP_ART 끝
+
+const fpLoader = (function () {
+	// [임시] 숫자 — 엔진이 켜지기 전이라 조절 창에서 못 바꿔요. 여기서 바꿔요
+	const T = {
+		count_min: 5, count_max: 10,   // 조각 수: 열 때마다 이 사이 무작위 (손질 2, 하준 "5~10개 랜덤"). 그 개수만큼 이어진 아무 모양 뗏목을 잘라 흩어요 (조각마다 짝이 있어요)
+		snap: 12,                  // 짝 자리에서 이만큼(px) 안에 놓으면 붙어요
+		snap_angle: 30,            // 짝과 각도가 이만큼(도) 안이면 붙으며 똑바로 (게임 snap_angle). 90° 돌아간 짝도 맞으면 붙어요
+		spawn_tilt: 15,            // 처음 기울기 ±(도, 게임 흘러오는 조각 spawn_tilt)
+		gap: 36,                   // 쉬는 조각끼리 칸 가운데 사이 최소 (px, 게임 float_gap 과 같게). 겹쳐 놓으면 천천히 벌어져요
+		sep_speed: 40,             // 벌어지는 빠르기 (px/초)
+		join_px: 20,               // 붙을 때 물결이 퍼지는 거리 (게임 attach_ripple_px)
+		join_life: 0.9,            // 붙을 때 물결이 남는 시간 (게임 wake_spread_life)
+		end_px: 40,                // 다 됐을 때 조각마다 제 모양대로 퍼지는 물결 거리 (게임 첫 물결 intro_ripple_px 와 같게)
+		end_life: 1.5,             // 그 물결이 남는 시간 (초, 게임 intro_ripple_life)
+		wake_fps: 20,              // 물결이 1초에 몇 번 움직이나 (게임 wake_fps — 일부러 끊겨 보이게, 하준 "픽셀 느낌")
+		fade_after: 0.5,           // 물결이 시작되고 이만큼 뒤에 (물결이 반쯤 퍼진 걸 보고)
+		fade: 0.6,                 // 이만큼 동안 스르륵 게임 화면으로 (초)
+		climb: 2.0,                // 퍼센트가 따라 오르는 최대 빠르기 (진행/초) — 갑자기 튀지 않게
+		finish: 3.0,               // 다 받았을 때 남은 불이 마저 켜지는 빠르기 (진행/초)
+		flash: 0.35,               // 다 켜진 조각이 반짝이는 시간 (초)
+		calm: 0.3,                 // 다 받아서 불이 다 켜지고 이만큼 뒤 엔진을 켜요 (엔진이 켜지며 화면이 멈추는 순간이 "다 됨" 화면이게)
+		ready_wait: 8,             // 엔진은 켜졌는데 게임 신호가 안 오면 이만큼 뒤 그냥 넘어가요 (초)
+		target_w: 220,             // 게임 world_target_width 와 같게 (조각이 게임과 같은 크기로 보이게)
+	};
+	// 끌기 (scripts/drag.gd 물 계산과 scripts/settings.gd 기본값 그대로)
+	const PHYS = {
+		step: 1 / 120,             // 물 계산 간격 (STEP)
+		inertia: 100,              // 조각이 도는 무거움 (INERTIA)
+		mid_in: 2, mid_out: 6,     // 가운데 잡으면 안 돌기 (MID_IN, MID_OUT)
+		edge: 6,                   // 손가락 자리는 화면 끝에서 이만큼 안쪽까지 (EDGE)
+		spring: 150,               // drag_spring
+		water: 22,                 // drag_water
+		quad: 150,                 // drag_quad
+		turn_drag: 2000,           // turn_drag
+		spin_coast: 0.6,           // spin_coast
+		spin_max: 180,             // spin_max (도/초)
+		raft_base: 1.5,            // raft_weight_base
+		raft_per: 0.25,            // raft_weight_per_piece
+		raft_max: 8,               // raft_weight_max
+		raft_spin_max: 4,          // raft_spin_weight_max
+		piece_gap: 24,             // 조각끼리 가운데가 이보다 가까우면 밀어내요 (PIECE_GAP)
+		raft_gap: 27,              // 무리 칸 가운데에서 가로·세로 이만큼 안이면 밀려나요 (raft_gap)
+		push_step: 5,              // 밀려나는 조각이 한 걸음(1/120초)에 움직이는 최대 (px) — 튀지 않게 [임시]
+	};
+	// 게임과 같은 값 (scripts/settings.gd 기본값, scripts/tiers.gd 단계 색, scripts/sea.gd 바다 색)
+	const SEA = [0x0b, 0x15, 0x30];
+	const BLACK = [0, 0, 0];
+	const TIERS = [
+		[0x4c, 0x8d, 0xff], [0x4c, 0x8d, 0xff], [0x4f, 0xd3, 0xff], [0x4b, 0xe3, 0x8a],
+		[0xff, 0x5a, 0x6a], [0xff, 0xd8, 0x4d], [0xa9, 0x7b, 0xff], [0xff, 0x77, 0xc8],
+	];
+	const TOP_TIER = 7;
+	const TITLE_COLOR = [0xe3, 0xed, 0xff];
+	const PCT_COLOR = [0x69, 0x80, 0xac];
+	const LOOK = {
+		line_white: 0.85, seam: 0.5, fill_alpha: 0.4, off_bright: 0.55, glow: 0.7,
+		wake_white: 0.9, wake_glow: 0.6, under: 0.4, under_raft: 0.25,
+		sway_px: 1.5, sway_deg: 4.0, sway_period: 5.0, sway_fade: 0.6,
+	};
+
+	// ── 조각 모양 (scripts/piece_shape.gd 그대로) ──
+	const CELL = 24, SPAN = 25, KNOB = 7, C = 12;
+	const KNOB_LINE = [
+		[0, -3], [0, 3], [1, -3], [1, 3],
+		[2, -4], [3, -4], [4, -4], [5, -4],
+		[2, 4], [3, 4], [4, 4], [5, 4],
+		[6, -3], [6, 3],
+		[7, -2], [7, -1], [7, 0], [7, 1], [7, 2],
+	];
+	const KNOB_FILL_HALF = [2, 2, 3, 3, 3, 3, 2];
+	const LINE = 1, FILL = 2;
+	const DIRS = [[0, -1], [1, 0], [0, 1], [-1, 0]];   // 위, 오른쪽, 아래, 왼쪽
+
+	function at(side, u, v, kind) {
+		const d = kind > 0 ? u : -u;
+		switch (side) {
+			case 0: return [C + v, 0 - d];
+			case 1: return [CELL + d, C + v];
+			case 2: return [C + v, CELL + d];
+			default: return [0 - d, C + v];
+		}
+	}
+
+	// 조각 픽셀: Map("x,y" -> LINE/FILL), 몸통 왼쪽 위 = (0, 0)
+	function shapePixels(edges) {
+		const px = new Map();
+		for (let y = 0; y < SPAN; y++) {
+			for (let x = 0; x < SPAN; x++) {
+				px.set(x + ',' + y, (x === 0 || y === 0 || x === CELL || y === CELL) ? LINE : FILL);
+			}
+		}
+		for (let side = 0; side < 4; side++) {
+			const kind = edges[side];
+			for (let u = 0; u < KNOB; u++) {
+				for (let v = -KNOB_FILL_HALF[u]; v <= KNOB_FILL_HALF[u]; v++) {
+					const p = at(side, u, v, kind);
+					if (kind > 0) {
+						px.set(p[0] + ',' + p[1], FILL);
+					} else {
+						px.delete(p[0] + ',' + p[1]);
+					}
+				}
+			}
+			for (const q of KNOB_LINE) {
+				const p = at(side, q[0], q[1], kind);
+				px.set(p[0] + ',' + p[1], LINE);
+			}
+		}
+		return px;
+	}
+
+	// 가운데 픽셀 기준 [x, y, LINE/FILL] 목록 (같은 모양은 한 번만)
+	const shapeCache = new Map();
+	function shapeList(edges) {
+		const key = edges.join(',');
+		if (!shapeCache.has(key)) {
+			const list = [];
+			for (const [k, v] of shapePixels(edges)) {
+				const xy = k.split(',');
+				list.push([+xy[0] - C, +xy[1] - C, v]);
+			}
+			shapeCache.set(key, list);
+		}
+		return shapeCache.get(key);
+	}
+
+	// ── 작은 수학 ──
+	// Godot round() 처럼 반올림 (0.5 는 0 에서 먼 쪽)
+	function rnd(x) {
+		return x < 0 ? -Math.round(-x) : Math.round(x);
+	}
+
+	function rot(v, a) {
+		const c = Math.cos(a), s = Math.sin(a);
+		return [v[0] * c - v[1] * s, v[0] * s + v[1] * c];
+	}
+
+	function wrap(a) {
+		while (a > Math.PI) {
+			a -= Math.PI * 2;
+		}
+		while (a <= -Math.PI) {
+			a += Math.PI * 2;
+		}
+		return a;
+	}
+
+	function smooth(a, b, x) {
+		const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+		return t * t * (3 - 2 * t);
+	}
+
+	// 칸 자리를 시계 방향 90도 q 번 (화면은 아래가 +y 라 (1,0) → (0,1))
+	function rotQ(x, y, q) {
+		for (let i = 0; i < q; i++) {
+			const t = x;
+			x = -y;
+			y = t;
+		}
+		return [x, y];
+	}
+
+	// 변을 시계 방향 90도 q 번 돌린 것 (위의 것이 오른쪽으로)
+	function rotEdges(e, q) {
+		const out = [0, 0, 0, 0];
+		for (let s = 0; s < 4; s++) {
+			out[(s + q) % 4] = e[s];
+		}
+		return out;
+	}
+
+	// ── 상태 ──
+	const box = document.getElementById('fp-load');
+	const cv = document.getElementById('fp-loader');
+	const ctx = cv.getContext('2d');
+	const save = readSave();
+	const first = save === null;
+	if (first) {
+		box.classList.add('first');
+	}
+	let W = 0, H = 0, N = 1, sizeKey = '';
+	let img = null;
+	let base = null;            // 바다 + 제목 (매 프레임 여기서 시작)
+	let titleAt = [0, 0];
+	let pctAt = [0, 0];
+	let groups = [];            // 조각 무리 (처음엔 조각 하나씩). 뒤에 있을수록 위에 그려요
+	let pieces = [];
+	let ripples = [];
+	let mKind, mLit, mFlash, mGid, mTier, wB, wT;   // 그림판 크기 지도: 조각 종류·켜짐·반짝·무리·단계, 물결 밝기·단계
+	let stamp, fid = 0;                  // 이번 프레임에 색칠한 픽셀 표시
+	let dl = 0, dlDone = false, ready = false, started = false;
+	let calmAt = -1;            // 다 받고 불이 다 켜진 시각 (그 뒤 T.calm 에 엔진을 켜요)
+	let startAsked = false;     // 엔진 켜기를 불렀나
+	let startShown = -1;        // 엔진을 켤 때의 퍼센트 (검사용)
+	let startWhen = null;       // 엔진 켜기 (시작 쪽이 넣어 줘요)
+	let shown = 0;
+	let held = null;            // 검사용: 진행을 이 값에 묶어 둬요 (null = 진짜 진행). 묶인 동안은 엔진을 안 켜요
+	let endAt = -1;             // 다 됐을 때 물결이 시작된 시각 (초, 로딩 화면 시계)
+	let clock = 0;
+	let acc = 0;                // 물 계산에 남은 시간
+	let last = 0;
+	let gone = false;
+	let failed = false;
+	let endQueue = [];          // 다 됐을 때 물결을 낼 무리 차례
+	let endMs = 0;              // 다 됐을 때 물결 하나 모양 재는 데 걸린 가장 긴 시간 (검사용)
+	let drawMs = 0;             // 그리는 데 걸린 시간 (검사용, 부드럽게 평균)
+	let lastPick = null;        // 마지막으로 누른 자리와 잡힌 무리 (검사용)
+	let rippleSteps = [];       // 물결이 그려진 걸음 시각들 (검사용 — 1초에 wake_fps 번)
+	const api = { timeScale: 1 };
+
+	// 저장: 뗏목이 있으면 돌아온 사람 (없으면 처음 실행 = 게임이 시작 연출을 하는 조건, scripts/main.gd _load_world).
+	// 가장 높은 단계 = 뗏목 조각 중 가장 높은 단계 (합치기 판 줄 수와 같은 기준, scripts/hud.gd _merge_rows)
+	function readSave() {
+		try {
+			const s = localStorage.getItem('floating_piece_run');
+			if (!s) {
+				return null;
+			}
+			const d = JSON.parse(s);
+			const r = d && d.world && d.world.rafts;
+			if (!Array.isArray(r) || r.length === 0) {
+				return null;
+			}
+			let top = 1;
+			for (const raft of r) {
+				for (const e of (raft && raft.cells) || []) {
+					if (Array.isArray(e) && e.length >= 3) {
+						top = Math.max(top, Math.min(TOP_TIER, e[2] | 0));
+					}
+				}
+			}
+			return { top: top };
+		} catch (e) {
+			return null;
+		}
+	}
+
+	// ── 크기: 게임 scripts/main.gd sea_fit 과 같게 (정수배, 넘치는 건 양쪽 반씩 화면 밖) ──
+	function layout() {
+		const dpr = window.devicePixelRatio || 1;
+		const ww = Math.max(1, Math.floor(window.innerWidth * dpr));
+		const wh = Math.max(1, Math.floor(window.innerHeight * dpr));
+		const n = Math.max(1, Math.floor(ww / T.target_w));
+		const w = Math.ceil(ww / n), h = Math.ceil(wh / n);
+		const sx = Math.floor((w * n - ww) / 2), sy = Math.floor((h * n - wh) / 2);
+		const key = [ww, wh, dpr].join(',');
+		if (key === sizeKey) {
+			return;
+		}
+		sizeKey = key;
+		cv.style.width = (w * n / dpr) + 'px';
+		cv.style.height = (h * n / dpr) + 'px';
+		cv.style.left = (-sx / dpr) + 'px';
+		cv.style.top = (-sy / dpr) + 'px';
+		if (w === W && h === H && n === N) {
+			return;
+		}
+		const ow = W, oh = H;
+		W = w;
+		H = h;
+		N = n;
+		cv.width = W;
+		cv.height = H;
+		img = ctx.createImageData(W, H);
+		mKind = new Uint8Array(W * H);
+		mLit = new Float32Array(W * H);
+		mFlash = new Float32Array(W * H);
+		mGid = new Int16Array(W * H);
+		mTier = new Uint8Array(W * H);
+		wB = new Float32Array(W * H);
+		wT = new Uint8Array(W * H);
+		stamp = new Uint32Array(W * H);
+		makeBase();
+		if (ow > 0) {
+			for (const g of groups) {
+				g.c[0] = g.c[0] * W / ow;
+				g.c[1] = g.c[1] * H / oh;
+				keepInside(g);
+			}
+			ripples = [];                 // 크기가 바뀌면 물결 자리가 어긋나서 지워요
+		}
+	}
+
+	function glyphW(text) {
+		let w = 0;
+		for (const ch of text) {
+			const g = FP_ART && FP_ART.glyphs[ch];
+			w += g ? g.adv : 6;
+		}
+		return w;
+	}
+
+	function makeBase() {
+		const bg = first ? BLACK : SEA;
+		base = new Uint8ClampedArray(W * H * 4);
+		for (let i = 0; i < W * H; i++) {
+			base[i * 4] = bg[0];
+			base[i * 4 + 1] = bg[1];
+			base[i * 4 + 2] = bg[2];
+			base[i * 4 + 3] = 255;
+		}
+		const ph = FP_ART ? FP_ART.glyphs['0'].rows.length : 9;
+		if (first) {
+			pctAt = [Math.floor(W / 2), Math.floor(H / 2 - ph / 2)];
+			return;
+		}
+		// 제목: 갈무리11 12px 를 2배 (픽셀 2x2), 가운데보다 조금 위
+		const rows = FP_ART ? FP_ART.title.rows : [];
+		const tw = rows.length ? rows[0].length * 2 : 0;
+		const th = rows.length * 2;
+		titleAt = [Math.floor((W - tw) / 2), Math.floor(H * 0.42 - th)];
+		for (let y = 0; y < rows.length; y++) {
+			for (let x = 0; x < rows[y].length; x++) {
+				if (rows[y][x] !== '#') {
+					continue;
+				}
+				for (let k = 0; k < 4; k++) {
+					const X = titleAt[0] + x * 2 + (k & 1), Y = titleAt[1] + y * 2 + (k >> 1);
+					if (X >= 0 && Y >= 0 && X < W && Y < H) {
+						const i = (Y * W + X) * 4;
+						base[i] = TITLE_COLOR[0];
+						base[i + 1] = TITLE_COLOR[1];
+						base[i + 2] = TITLE_COLOR[2];
+					}
+				}
+			}
+		}
+		pctAt = [Math.floor(W / 2), titleAt[1] + th + 8];
+	}
+
+	// 퍼센트 글자 (가운데 맞춤)
+	function drawPct(d) {
+		if (!FP_ART) {
+			return;
+		}
+		const text = Math.floor(shown * 100 + 1e-6) + '%';
+		let x = pctAt[0] - Math.floor(glyphW(text) / 2);
+		const y0 = pctAt[1];
+		for (const ch of text) {
+			const g = FP_ART.glyphs[ch];
+			for (let y = 0; y < g.rows.length; y++) {
+				for (let xx = 0; xx < g.rows[y].length; xx++) {
+					if (g.rows[y][xx] !== '#') {
+						continue;
+					}
+					const X = x + g.x + xx, Y = y0 + y;
+					if (X >= 0 && Y >= 0 && X < W && Y < H) {
+						const i = (Y * W + X) * 4;
+						d[i] = PCT_COLOR[0];
+						d[i + 1] = PCT_COLOR[1];
+						d[i + 2] = PCT_COLOR[2];
+					}
+				}
+			}
+			x += g.adv;
+		}
+	}
+
+	// ── 조각·무리 ──
+	function randEdge() {
+		return Math.random() < 0.5 ? 1 : -1;
+	}
+
+	// 이어진 아무 모양 n칸 (테트리스 블록처럼): (0,0) 에서 시작해, 이미 있는 칸 하나를 골라 그 옆 빈칸을 더해요 (손질 2)
+	function randomShape(n) {
+		const sides = [[0, -1], [1, 0], [0, 1], [-1, 0]];
+		const cells = [[0, 0]];
+		const has = new Set(['0,0']);
+		while (cells.length < n) {
+			const c = cells[Math.floor(Math.random() * cells.length)];
+			const d = sides[Math.floor(Math.random() * 4)];
+			const k = (c[0] + d[0]) + ',' + (c[1] + d[1]);
+			if (!has.has(k)) {
+				has.add(k);
+				cells.push([c[0] + d[0], c[1] + d[1]]);
+			}
+		}
+		return cells;
+	}
+
+	function makePieces() {
+		// 5~10칸 뗏목을 잘라요: 맞닿은 변은 한쪽 볼록·한쪽 오목, 바깥 변은 아무거나 (게임 조각은 네 변이 다 볼록·오목) [위, 오른쪽, 아래, 왼쪽]
+		const n = T.count_min + Math.floor(Math.random() * (T.count_max - T.count_min + 1));
+		const homes = randomShape(n);
+		const at = new Map();
+		homes.forEach((h, i) => at.set(h[0] + ',' + h[1], i));
+		const cut = homes.map(() => [randEdge(), randEdge(), randEdge(), randEdge()]);
+		homes.forEach((h, i) => {
+			const r = at.get((h[0] + 1) + ',' + h[1]);
+			if (r !== undefined) {
+				cut[r][3] = -cut[i][1];
+			}
+			const d = at.get(h[0] + ',' + (h[1] + 1));
+			if (d !== undefined) {
+				cut[d][0] = -cut[i][2];
+			}
+		});
+		// 단계: 1 ~ 내 가장 높은 단계 중 무작위 (하준 "자신의 단계 피스까지의 피스들이 랜덤으로")
+		const top = save ? save.top : 1;
+		const list = homes.map((h, i) => ({ edges: cut[i], home: h, tier: 1 + Math.floor(Math.random() * top), order: 0, lit: 0, flash: 0, done: false }));
+		// 불 켜지는 차례: 무작위
+		const order = list.map((_, i) => i);
+		for (let i = order.length - 1; i > 0; i--) {
+			const j = Math.floor(Math.random() * (i + 1));
+			const t = order[i];
+			order[i] = order[j];
+			order[j] = t;
+		}
+		order.forEach((pi, k) => { list[pi].order = k; });
+		return list;
+	}
+
+	// 무리: 칸 (0,0) 가운데 픽셀의 왼쪽 위 = 무리 그림 (0, 0). c = 화면에서 무게중심, turn = 각도 (라디안, 시계 방향 +)
+	function newGroup(piece, x, y, turn) {
+		const g = {
+			c: [x, y], turn: turn, v: [0, 0], w: 0,
+			cells: [{ cx: 0, cy: 0, piece: piece, edges: piece.edges.slice() }],
+			finger: null, grab: [0, 0], target: [x, y], sway: 1,
+			phase: [Math.random() * 6.283, Math.random() * 6.283, Math.random() * 6.283],
+			pivot: null, buf: null, rect: null, inertia: PHYS.inertia,
+		};
+		rebuild(g);
+		return g;
+	}
+
+	// 무리 그림 다시 만들기 (돌리기 전). 칸 테두리는 이웃과 같은 픽셀이라 붙으면 한 줄.
+	// 무게중심(pivot)이 옮겨 가도 무리는 화면에서 그 자리 그대로예요
+	function rebuild(g) {
+		let cx0 = 99, cx1 = -99, cy0 = 99, cy1 = -99;
+		for (const c of g.cells) {
+			cx0 = Math.min(cx0, c.cx);
+			cx1 = Math.max(cx1, c.cx);
+			cy0 = Math.min(cy0, c.cy);
+			cy1 = Math.max(cy1, c.cy);
+		}
+		const x0 = cx0 * CELL - C - KNOB, y0 = cy0 * CELL - C - KNOB;
+		const w = (cx1 - cx0) * CELL + SPAN + KNOB * 2, h = (cy1 - cy0) * CELL + SPAN + KNOB * 2;
+		const kind = new Uint8Array(w * h);
+		const tier = new Uint8Array(w * h);
+		const cells = [];
+		for (const c of g.cells) {
+			const idx = [];
+			let ya = 1e9, yb = -1e9;
+			for (const p of shapeList(c.edges)) {
+				const lx = c.cx * CELL + p[0], ly = c.cy * CELL + p[1];
+				const i = (ly - y0) * w + (lx - x0);
+				if (kind[i] !== LINE) {
+					kind[i] = p[2];
+				}
+				tier[i] = Math.max(tier[i], c.piece.tier);   // 나눠 쓰는 테두리는 높은 단계 쪽
+				idx.push(i, ly);
+				ya = Math.min(ya, ly);
+				yb = Math.max(yb, ly);
+			}
+			cells.push({ idx: idx, ya: ya, yb: yb });
+		}
+		let px = 0, py = 0;
+		for (const c of g.cells) {
+			px += c.cx * CELL + 0.5;
+			py += c.cy * CELL + 0.5;
+		}
+		px /= g.cells.length;
+		py /= g.cells.length;
+		if (g.pivot) {
+			const d = rot([px - g.pivot[0], py - g.pivot[1]], g.turn);
+			g.c[0] += d[0];
+			g.c[1] += d[1];
+		}
+		g.pivot = [px, py];
+		// 도는 무거움 (scripts/drag.gd _step_raft: 조각마다 무게중심까지 거리² + 조각 자기 몫)
+		const n = g.cells.length;
+		if (n <= 1) {
+			g.inertia = PHYS.inertia;
+		} else {
+			let spread = 0;
+			for (const c of g.cells) {
+				spread += (c.cx * CELL + 0.5 - px) ** 2 + (c.cy * CELL + 0.5 - py) ** 2 + 96;
+			}
+			g.inertia = PHYS.inertia / 96 * spread / n * spinWeight(n);
+		}
+		g.buf = {
+			x0: x0, y0: y0, w: w, h: h, kind: kind, tier: tier, cells: cells,
+			lit: new Float32Array(w * h), flash: new Float32Array(w * h),
+		};
+	}
+
+	// 무리 그림 자리 → 화면 자리, 화면 → 무리 그림
+	function worldOf(g, l) {
+		const d = rot([l[0] - g.pivot[0], l[1] - g.pivot[1]], g.turn);
+		return [g.c[0] + d[0], g.c[1] + d[1]];
+	}
+
+	function localOf(g, p) {
+		const d = rot([p[0] - g.c[0], p[1] - g.c[1]], -g.turn);
+		return [g.pivot[0] + d[0], g.pivot[1] + d[1]];
+	}
+
+	function cellWorld(g, c) {
+		return worldOf(g, [c.cx * CELL + 0.5, c.cy * CELL + 0.5]);
+	}
+
+	function topTier(g) {
+		let t = 1;
+		for (const c of g.cells) {
+			t = Math.max(t, c.piece.tier);
+		}
+		return t;
+	}
+
+	function scatter() {
+		pieces = makePieces();
+		groups = [];
+		// 제목·퍼센트 둘레는 비우고, 서로 안 겹치게 무작위 자리 (가운데 사이 48px 넘게)
+		const tw = FP_ART ? FP_ART.title.rows[0].length * 2 : 100;
+		const avoid = [titleAt[0] - 22, titleAt[1] - 22, titleAt[0] + tw + 22, pctAt[1] + 14 + 22];
+		const placed = [];
+		for (const p of pieces) {
+			let best = null;
+			for (let k = 0; k < 400; k++) {
+				const x = 24 + Math.random() * (W - 48), y = 24 + Math.random() * (H - 48);
+				if (x > avoid[0] && x < avoid[2] && y > avoid[1] && y < avoid[3]) {
+					continue;
+				}
+				let ok = true;
+				for (const q of placed) {
+					if (Math.hypot(q[0] - x, q[1] - y) < 48) {
+						ok = false;
+						break;
+					}
+				}
+				if (ok) {
+					best = [x, y];
+					break;
+				}
+			}
+			if (!best) {
+				best = [24 + Math.random() * (W - 48), 24 + Math.random() * (H - 48)];
+			}
+			placed.push(best);
+			// 처음 기울기: 게임 흘러오는 조각처럼 ±15° (하준)
+			const tilt = (Math.random() * 2 - 1) * T.spawn_tilt * Math.PI / 180;
+			groups.push(newGroup(p, Math.round(best[0]) + 0.5, Math.round(best[1]) + 0.5, tilt));
+		}
+	}
+
+	// 무리를 (dx, dy) 옮기면 칸 가운데가 다 화면 끝에서 반 칸 안쪽이 되게 얼마나 더 옮겨야 하나 (게임 "화면 안" 과 같게)
+	function insideShift(g) {
+		let lx = -Infinity, hx = Infinity, ly = -Infinity, hy = Infinity;
+		for (const c of g.cells) {
+			const p = cellWorld(g, c);
+			lx = Math.max(lx, C + 1 - p[0]);
+			hx = Math.min(hx, W - C - 1 - p[0]);
+			ly = Math.max(ly, C + 1 - p[1]);
+			hy = Math.min(hy, H - C - 1 - p[1]);
+		}
+		return [lx > hx ? lx : Math.min(Math.max(0, lx), hx), ly > hy ? ly : Math.min(Math.max(0, ly), hy)];
+	}
+
+	function keepInside(g) {
+		const d = insideShift(g);
+		if (d[0] !== 0) {
+			g.c[0] += d[0];
+			g.v[0] = 0;
+		}
+		if (d[1] !== 0) {
+			g.c[1] += d[1];
+			g.v[1] = 0;
+		}
+	}
+
+	function pick(p) {
+		for (let i = groups.length - 1; i >= 0; i--) {
+			const g = groups[i];
+			if (g.finger !== null) {
+				continue;
+			}
+			const l = localOf(g, p);
+			for (const c of g.cells) {
+				if (Math.abs(l[0] - (c.cx * CELL + 0.5)) <= 16 && Math.abs(l[1] - (c.cy * CELL + 0.5)) <= 16) {
+					return g;
+				}
+			}
+		}
+		return null;
+	}
+
+	// h 를 q 번 돌려 g 의 칸 (ox, oy) 에 놓으면 맞나: 칸이 안 겹치고, 맞닿는 변이 다 볼록·오목 짝, 하나 이상 맞닿음
+	function fits(g, h, ox, oy, q) {
+		const occ = new Map();
+		for (const c of g.cells) {
+			occ.set(c.cx + ',' + c.cy, c);
+		}
+		const add = [];
+		for (const c of h.cells) {
+			const r = rotQ(c.cx, c.cy, q);
+			const x = r[0] + ox, y = r[1] + oy;
+			if (occ.has(x + ',' + y)) {
+				return false;
+			}
+			add.push([x, y, rotEdges(c.edges, q)]);
+		}
+		let touch = 0;
+		for (const a of add) {
+			for (let s = 0; s < 4; s++) {
+				const n = occ.get((a[0] + DIRS[s][0]) + ',' + (a[1] + DIRS[s][1]));
+				if (!n) {
+					continue;
+				}
+				if (a[2][s] + n.edges[(s + 2) % 4] !== 0) {
+					return false;
+				}
+				touch++;
+			}
+		}
+		return touch > 0;
+	}
+
+	// h 를 지금 놓으면 g 의 어느 칸에 붙나 (게임처럼: 각도 snap_angle 안, 짝 자리에서 snap px 안, 모양이 맞음). 못 붙으면 null
+	function snapAt(g, h) {
+		const d = wrap(h.turn - g.turn);
+		const k = Math.round(d / (Math.PI / 2));
+		const q = ((k % 4) + 4) % 4;
+		if (Math.abs(d - k * Math.PI / 2) > T.snap_angle * Math.PI / 180) {
+			return null;
+		}
+		const l = localOf(g, worldOf(h, [0.5, 0.5]));      // h 의 칸 (0,0) 가운데가 g 그림에서 어디
+		const ox = Math.round((l[0] - 0.5) / CELL), oy = Math.round((l[1] - 0.5) / CELL);
+		const err = Math.hypot(l[0] - (ox * CELL + 0.5), l[1] - (oy * CELL + 0.5));
+		if (err > T.snap || !fits(g, h, ox, oy, q)) {
+			return null;
+		}
+		return { g: g, ox: ox, oy: oy, q: q, err: err };
+	}
+
+	// 놓았을 때 짝 자리 근처면 붙어요 (붙는 쪽이 짝의 각도로 똑바로)
+	function trySnap(h) {
+		let best = null;
+		for (const g of groups) {
+			if (g === h || g.finger !== null) {
+				continue;
+			}
+			const s = snapAt(g, h);
+			if (s && (!best || s.err < best.err)) {
+				best = s;
+			}
+		}
+		if (!best) {
+			return false;
+		}
+		const g = best.g;
+		for (const c of h.cells) {
+			const r = rotQ(c.cx, c.cy, best.q);
+			g.cells.push({ cx: r[0] + best.ox, cy: r[1] + best.oy, piece: c.piece, edges: rotEdges(c.edges, best.q) });
+		}
+		groups.splice(groups.indexOf(h), 1);
+		groups.splice(groups.indexOf(g), 1);
+		groups.push(g);
+		rebuild(g);
+		g.v = [0, 0];
+		g.w = 0;
+		g.sway = 0;                     // 붙은 순간은 똑바로, 천천히 다시 흔들려요
+		keepInside(g);
+		joinRipple(g, topTier(h));
+		trySnap(g);                     // 붙은 무리가 또 다른 짝 자리에 딱 있으면 그것도
+		return true;
+	}
+
+	// ── 부딪힘 (scripts/drag.gd: 끄는 것이 다른 조각을 밀어내요, 하준 "충돌 판정") ──
+	// 끄는 무리(h)와 다른 무리(g)가 겹치면: g 가 h 보다 작거나 같으면 g 가 밀려나고, 더 크면 h 가 g 벽을 따라 미끄러져요.
+	// 겹침 = 칸 가운데가 상대 칸 가운데에서 가로·세로 둘 다 gap 안 (조각끼리 24 = PIECE_GAP, 무리가 끼면 27 = raft_gap).
+	// 지금 놓으면 붙는 짝 자리면 안 밀어요 (손 떼면 붙게, drag.gd "맞는 조각은 밀지 않아요").
+	function collide() {
+		for (const h of groups) {
+			if (h.finger === null) {
+				continue;
+			}
+			h.dbg = '';
+			for (const g of groups) {
+				if (g === h || g.finger !== null) {
+					continue;
+				}
+				const gap = h.cells.length === 1 && g.cells.length === 1 ? PHYS.piece_gap : PHYS.raft_gap;
+				let s = snapAt(g, h);
+				// 짝 자리에 있다가 손가락이 무리 안쪽을 누르고 있으면 짝 자리 둘레(snap px) 끝에 머물러요.
+				// 안 그러면 짝 자리를 벗어나 밀려났다가 다시 짝 자리라 안 밀리고 끌려 들어가기를 되풀이해 0.15초마다 13px 떨었어요 (검사).
+				// 손가락이 무리 밖이면(옆을 지나가는 중) 안 붙잡아요 — 지나가다 스친 짝 자리에 자석처럼 걸렸어요 (검사)
+				const arm = rot(h.grab, h.turn);
+				const pressing = overlapDepth(h, g, gap, h.target[0] - (h.c[0] + arm[0]), h.target[1] - (h.c[1] + arm[1])) > 0;
+				if (!s && pressing && h.slot && h.slot.g === g && overlapDepth(h, g, gap, 0, 0) > 0) {
+					const sw = worldOf(g, [h.slot.ox * CELL + 0.5, h.slot.oy * CELL + 0.5]);
+					const hc = worldOf(h, [0.5, 0.5]);
+					const d = Math.hypot(hc[0] - sw[0], hc[1] - sw[1]);
+					if (d > 0.001) {
+						const k = (T.snap - 0.5) / d;
+						const mx = sw[0] + (hc[0] - sw[0]) * k - hc[0], my = sw[1] + (hc[1] - sw[1]) * k - hc[1];
+						h.c[0] += mx;
+						h.c[1] += my;
+						const into = -(h.v[0] * mx + h.v[1] * my) / Math.hypot(mx, my);
+						if (into > 0) {
+							h.v[0] += into * mx / Math.hypot(mx, my);
+							h.v[1] += into * my / Math.hypot(mx, my);
+						}
+					}
+					s = snapAt(g, h);
+					h.dbg = s ? 'clamp-ok' : 'clamp-lost';
+				}
+				if (s) {
+					if (h.dbg !== 'clamp-ok') {
+						h.dbg = 'slot ' + s.ox + ',' + s.oy + ' q' + s.q + ' err ' + s.err.toFixed(1);
+					}
+					h.slot = { g: g, ox: s.ox, oy: s.oy };
+					continue;                   // 짝 자리는 안 밀어요 (손 떼면 붙게)
+				}
+				if (h.slot && h.slot.g === g) {
+					h.slot = null;
+				}
+				if (snapAt(h, g)) {
+					h.dbg = 'g-slot';
+					continue;
+				}
+				if (g.cells.length <= h.cells.length) {
+					pushOut(g, h, gap, true);
+				} else {
+					pushOut(h, g, gap, false);
+				}
+			}
+			// 어느 무리 칸 네모와도 안 겹치면 그 자리를 기억 (막히면 여기서 온 길로 벽에 멈춰요)
+			let clear = true;
+			for (const g of groups) {
+				if (g !== h && g.finger === null) {
+					const gap = h.cells.length === 1 && g.cells.length === 1 ? PHYS.piece_gap : PHYS.raft_gap;
+					if (overlapDepth(h, g, gap, 0, 0) > 0) {
+						clear = false;
+						break;
+					}
+				}
+			}
+			if (clear) {
+				h.free = h.c.slice();
+			}
+		}
+	}
+
+	// mover 를 (ox, oy) 옮겼을 때 칸 가운데가 wall 칸 네모(wall 각도 기준 가로·세로 gap) 안으로 가장 깊이 들어간 만큼 (0 = 안 겹침)
+	function overlapDepth(mover, wall, gap, ox, oy) {
+		let worst = 0;
+		for (const mc of mover.cells) {
+			const p = cellWorld(mover, mc);
+			const l = localOf(wall, [p[0] + ox, p[1] + oy]);
+			for (const wc of wall.cells) {
+				const pen = Math.min(gap - Math.abs(l[0] - (wc.cx * CELL + 0.5)), gap - Math.abs(l[1] - (wc.cy * CELL + 0.5)));
+				if (pen > worst) {
+					worst = pen;
+				}
+			}
+		}
+		return worst;
+	}
+
+	// 겹쳤으면 가장 가까운 빈 자리로: wall 각도 기준 여덟 방향으로 조금씩 넓혀 보며 wall 전체와 안 겹치는 가장 가까운 곳.
+	// 밀리는 쪽(쉬는 무리)은 화면 끝에 막히는 방향은 빼요 — 벽에 붙은 조각은 벽을 따라 비켜요 (칸 사이에 끼지 않게, 하준 녹화).
+	// 밀리는 쪽은 한 걸음(1/120초)에 push_step px 까지만 (순간이동처럼 튀지 않게). 갈 데가 없으면 그대로 (끄는 무리가 위로 지나가요, drag.gd 와 같게)
+	function pushOut(mover, wall, gap, pushed) {
+		// 미리 한 번만: mover 칸 가운데(화면), wall 각도, wall 칸 가운데(wall 그림)
+		const pts = mover.cells.map((mc) => cellWorld(mover, mc));
+		const cs = Math.cos(-wall.turn), sn = Math.sin(-wall.turn);
+		const wcs = wall.cells.map((wc) => [wc.cx * CELL + 0.5, wc.cy * CELL + 0.5]);
+		const depth = function (dx, dy) {
+			let worst = 0;
+			for (const p of pts) {
+				const X = p[0] + dx - wall.c[0], Y = p[1] + dy - wall.c[1];
+				const lx = wall.pivot[0] + X * cs - Y * sn, ly = wall.pivot[1] + X * sn + Y * cs;
+				for (const w of wcs) {
+					const pen = Math.min(gap - Math.abs(lx - w[0]), gap - Math.abs(ly - w[1]));
+					if (pen > worst) {
+						worst = pen;
+					}
+				}
+			}
+			return worst;
+		};
+		if (depth(0, 0) <= 0) {
+			return;
+		}
+		// 끄는 쪽: 막히기 직전 자리(free)에서 지금 자리로 온 길 위에서 벽에 처음 닿는 곳까지만 와요 (벽 따라 미끄러짐).
+		// "가장 가까운 출구"로 보냈더니 손가락이 무리 안쪽 깊이 있을 때 출구가 이쪽저쪽 바뀌어 0.15초에 12px 씩 떨었어요 (검사)
+		if (!pushed && mover.free) {
+			const fx = mover.free[0] - mover.c[0], fy = mover.free[1] - mover.c[1];
+			if (depth(fx, fy) <= 0) {
+				let lo = 0, hi = 1;
+				for (let i = 0; i < 14; i++) {
+					const mid = (lo + hi) / 2;
+					if (depth(fx * mid, fy * mid) > 0) {
+						lo = mid;
+					} else {
+						hi = mid;
+					}
+				}
+				mover.c[0] += fx * hi;
+				mover.c[1] += fy * hi;
+				mover.dbg = 'swept';
+				const len = Math.hypot(fx, fy);
+				if (len > 0.001) {
+					const nx = fx / len, ny = fy / len;
+					const into = mover.v[0] * nx + mover.v[1] * ny;
+					if (into < 0) {
+						mover.v[0] -= into * nx;
+						mover.v[1] -= into * ny;
+					}
+				}
+				return;
+			}
+		}
+		// 밀리는 쪽(쉬는 무리): 둘레를 2px 씩 넓혀 가며 가장 가까운 빈 자리 (wall 과 안 겹치고 화면 안).
+		// 방향 = 화면 기준 32방향 + wall 기준 4방향 — 화면 끝 조각이 벽 바로 위아래로도 빠져나가게
+		// (wall 기준 16방향·120px 까지만 봤더니 큰 무리에 밀린 화면 끝 조각이 갈 데를 못 찾고 겹친 채 남았어요, 검사)
+		if (pushed) {
+			const dirs = [];
+			for (let k = 0; k < 32; k++) {
+				dirs.push([Math.cos(k * Math.PI / 16), Math.sin(k * Math.PI / 16)]);
+			}
+			for (let k = 0; k < 4; k++) {
+				dirs.push([Math.cos(wall.turn + k * Math.PI / 2), Math.sin(wall.turn + k * Math.PI / 2)]);
+			}
+			let tgt = null;
+			for (let r = 2; r <= 220 && !tgt; r += 2) {
+				for (const u of dirs) {
+					const dx = u[0] * r, dy = u[1] * r;
+					if (depth(dx, dy) > 0) {
+						continue;
+					}
+					mover.c[0] += dx;
+					mover.c[1] += dy;
+					const blocked = insideShift(mover);
+					mover.c[0] -= dx;
+					mover.c[1] -= dy;
+					if (Math.hypot(blocked[0], blocked[1]) > 0.5) {
+						continue;
+					}
+					tgt = [dx, dy, r];
+					break;
+				}
+			}
+			if (tgt) {
+				const k = Math.min(1, PHYS.push_step / tgt[2]);
+				mover.c[0] += tgt[0] * k;
+				mover.c[1] += tgt[1] * k;
+			}
+			return;
+		}
+		// 처음부터 겹친 채 잡은 끄는 쪽: 가장 가까운 출구
+		const home = null;
+		mover.dbg = 'exit' + (mover.free ? ' (free 도 겹침)' : '');
+		let best = null;
+		for (let k = 0; k < 16; k++) {
+			const ang = wall.turn + k * Math.PI / 8;
+			const ux = Math.cos(ang), uy = Math.sin(ang);
+			for (let t = 1; t <= 120; t += 1) {
+				if (best && !home && t >= best.t) {
+					break;
+				}
+				const dx = ux * t, dy = uy * t;
+				if (depth(dx, dy) > 0) {
+					continue;
+				}
+				if (pushed) {
+					mover.c[0] += dx;
+					mover.c[1] += dy;
+					const blocked = insideShift(mover);
+					mover.c[0] -= dx;
+					mover.c[1] -= dy;
+					if (Math.hypot(blocked[0], blocked[1]) > 0.5) {
+						break;                  // 이 방향은 화면 끝에 막혀요
+					}
+				}
+				const sc = home ? Math.hypot(mover.c[0] + dx - home[0], mover.c[1] + dy - home[1]) : t;
+				if (!best || sc < best.sc) {
+					best = { t: t, dx: dx, dy: dy, sc: sc };
+				}
+				break;
+			}
+		}
+		if (!best) {
+			return;
+		}
+		if (pushed) {
+			const k = Math.min(1, PHYS.push_step / best.t);
+			mover.c[0] += best.dx * k;
+			mover.c[1] += best.dy * k;
+			return;
+		}
+		// 끄는 무리는 벽 따라 미끄러져요: 그 쪽으로 가던 빠르기는 없애요
+		mover.c[0] += best.dx;
+		mover.c[1] += best.dy;
+		const nx = best.dx / best.t, ny = best.dy / best.t;
+		const into = mover.v[0] * nx + mover.v[1] * ny;
+		if (into < 0) {
+			mover.v[0] -= into * nx;
+			mover.v[1] -= into * ny;
+		}
+	}
+
+	// ── 끌기: scripts/drag.gd 물 계산 그대로 (잡은 점에 고무줄 힘, 가운데에 물 저항, 돌기에도 물 저항) ──
+	function weight(n) {
+		return n <= 1 ? 1 : Math.min(PHYS.raft_base + PHYS.raft_per * n, PHYS.raft_max);
+	}
+
+	function spinWeight(n) {
+		return n <= 1 ? 1 : Math.min(PHYS.raft_base + PHYS.raft_per * n, PHYS.raft_spin_max);
+	}
+
+	// 빠를수록 물 저항이 세져요 (drag.gd _water)
+	function water(v) {
+		const r = Math.hypot(v[0], v[1]) / PHYS.quad;
+		return PHYS.water * (1 + r * r);
+	}
+
+	function physStep(g, dt) {
+		const n = g.cells.length;
+		const wt = weight(n);
+		const arm = rot(g.grab, g.turn);                   // 가운데 → 잡은 점
+		let fx = 0, fy = 0;
+		if (g.finger !== null) {
+			fx = (g.target[0] - (g.c[0] + arm[0])) * PHYS.spring;
+			fy = (g.target[1] - (g.c[1] + arm[1])) * PHYS.spring;
+		}
+		const wv = water(g.v);
+		g.v[0] += (fx - g.v[0] * wv * wt) / wt * dt;
+		g.v[1] += (fy - g.v[1] * wv * wt) / wt * dt;
+		const torque = (arm[0] * fy - arm[1] * fx) * smooth(PHYS.mid_in, PHYS.mid_out, Math.hypot(arm[0], arm[1]));
+		if (g.finger !== null) {
+			if (n <= 1) {
+				g.w += (torque - g.w * PHYS.turn_drag) / PHYS.inertia * dt;
+			} else {
+				g.w += (torque - g.w * PHYS.turn_drag * g.inertia / PHYS.inertia * spinWeight(n)) / g.inertia * dt;
+			}
+		} else {
+			// 놓으면 돌던 빠르기로 조금 더 돌다가 물에 멈춰요 (_coast_spin)
+			const cap = PHYS.spin_max * Math.PI / 180;
+			g.w = Math.min(cap, Math.max(-cap, g.w)) * Math.exp(-dt / PHYS.spin_coast);
+		}
+		g.c[0] += g.v[0] * dt;
+		g.c[1] += g.v[1] * dt;
+		g.turn += g.w * dt;
+	}
+
+	// ── 물결 ──
+	// 조각(무리) 모양 그대로 바깥으로 번지는 1px 줄 (scripts/burst.gd — 가장 가까운 조각 픽셀까지 거리의 정수 부분이 ring 인 픽셀)
+	// (x0, y0, w0, h0) = 모양이 들어 있는 그림판 사각형, isIn(X, Y) = 그 픽셀이 모양인가
+	function shapeRipple(x0, y0, w0, h0, isIn, reach, life, tier) {
+		const pad = Math.ceil(reach) + 4;
+		const ox = x0 - pad, oy = y0 - pad;
+		const w = w0 + pad * 2, h = h0 + pad * 2;
+		const INF = 1e6;
+		// 재는 칸은 다시 써요 (매번 새로 잡으면 가끔 10ms 씩 걸렸어요)
+		if (!scratch || scratch.length < w * h) {
+			scratch = new Float32Array(Math.max(w * h, 65536));
+		}
+		const dx = scratch;
+		for (let y = 0; y < h; y++) {
+			// 가로줄: 같은 줄에서 가장 가까운 조각 픽셀까지 (왼→오, 오→왼)
+			let d = INF;
+			for (let x = 0; x < w; x++) {
+				d = isIn(ox + x, oy + y) ? 0 : d + 1;
+				dx[y * w + x] = d;
+			}
+			d = INF;
+			for (let x = w - 1; x >= 0; x--) {
+				d = dx[y * w + x] === 0 ? 0 : d + 1;
+				dx[y * w + x] = Math.min(dx[y * w + x], d);
+			}
+		}
+		// 세로로 모음: 줄마다 (가로 거리² + 세로 거리²) 가장 작은 것 — 아래로 내려가는 포물선들의 바닥을 한 번에 (Felzenszwalb)
+		// 줄마다 다 훑으면 맥에서도 65ms 걸려 넘어가는 순간 끊겼어요
+		const BIG = 1e12;
+		const f = new Float64Array(h), out = new Float64Array(h);
+		const v = new Int32Array(h), z = new Float64Array(h + 1);
+		const dist = new Uint8Array(w * h);
+		for (let x = 0; x < w; x++) {
+			for (let y = 0; y < h; y++) {
+				const t = dx[y * w + x];
+				f[y] = t >= INF / 2 ? BIG : t * t;
+			}
+			let k = 0;
+			v[0] = 0;
+			z[0] = -Infinity;
+			z[1] = Infinity;
+			for (let q = 1; q < h; q++) {
+				let sx = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+				while (sx <= z[k]) {
+					k--;
+					sx = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+				}
+				k++;
+				v[k] = q;
+				z[k] = sx;
+				z[k + 1] = Infinity;
+			}
+			k = 0;
+			for (let q = 0; q < h; q++) {
+				while (z[k + 1] < q) {
+					k++;
+				}
+				out[q] = (q - v[k]) * (q - v[k]) + f[v[k]];
+			}
+			for (let y = 0; y < h; y++) {
+				const b2 = out[y];
+				dist[y * w + x] = b2 >= BIG / 2 ? 255 : Math.min(254, Math.floor(Math.sqrt(b2) + 0.0001));
+			}
+		}
+		ripples.push({ x0: ox, y0: oy, w: w, h: h, dist: dist, age: 0, life: life, reach: reach, tau: life * 0.4, bright: 1, tier: tier });
+	}
+
+	let scratch = null;
+
+	// 처음 한 번은 브라우저가 이 계산을 익히느라 맥에서도 20ms (그다음 4ms) → 로딩 화면이 뜰 때 미리 한 번 (게임 셰이더 미리 데우기처럼)
+	function warmRipple() {
+		shapeRipple(0, 0, 100, 100, function (X, Y) {
+			return X > 40 && X < 60 && Y > 40 && Y < 60;
+		}, T.end_px, 1, 1);
+		ripples.length = 0;
+	}
+
+	// 무리를 지금 화면에 그려진 모양 그대로 (흔들려 기운 것까지) — 지난 프레임 지도에서
+	function drawnShape(gi) {
+		return function (X, Y) {
+			if (X < 0 || Y < 0 || X >= W || Y >= H) {
+				return false;
+			}
+			const i = Y * W + X;
+			return mKind[i] !== 0 && mGid[i] === gi;
+		};
+	}
+
+	// 붙을 때: 붙은 무리 모양 그대로 (붙는 순간은 흔들림 0, 각도는 무리 각도)
+	function joinRipple(g, tier) {
+		const b = g.buf;
+		// 무리 그림을 지금 각도로 화면에 놓은 모양 (그리기와 같은 계산)
+		const o = renderOrigin(g, 0, 0);
+		const r = rotRect(g, o, g.turn);
+		const cs = Math.cos(g.turn), sn = Math.sin(g.turn);
+		shapeRipple(r[0], r[1], r[2] - r[0] + 1, r[3] - r[1] + 1, function (X, Y) {
+			const qx = X + 0.5 - o[0], qy = Y + 0.5 - o[1];
+			const u = Math.floor(g.pivot[0] + qx * cs + qy * sn) - b.x0;
+			const v = Math.floor(g.pivot[1] - qx * sn + qy * cs) - b.y0;
+			return u >= 0 && v >= 0 && u < b.w && v < b.h && b.kind[v * b.w + u] !== 0;
+		}, T.join_px, T.join_life, tier);
+	}
+
+	// 다 됐을 때 (하준 "화면에 있는 모든 피스가 그 모양대로 파동"): 한 프레임에 무리 하나씩 재요
+	// (한꺼번에 재면 넘어가는 순간 끊길 수 있어서 — 1/60초 차이라 눈엔 같이 나와요)
+	function endRipple(gi) {
+		const g = groups[gi];
+		if (!g || !g.rect || g.rect[2] < g.rect[0]) {
+			return;
+		}
+		const r = g.rect;
+		shapeRipple(r[0], r[1], r[2] - r[0] + 1, r[3] - r[1] + 1, drawnShape(gi), T.end_px, T.end_life, topTier(g));
+	}
+
+	// ── 진행 ──
+	function target() {
+		if (held !== null) {
+			return held;
+		}
+		return dlDone ? 1 : dl;
+	}
+
+	// ── 한 프레임 ──
+	function step(now) {
+		if (gone) {
+			return;
+		}
+		requestAnimationFrame(step);
+		layout();
+		const real = last ? Math.min(0.1, (now - last) / 1000) : 0;
+		last = now;
+		const dt = real * api.timeScale;
+		clock += dt;
+		const want = target();
+		if (want > shown) {
+			shown = Math.min(want, shown + dt * (dlDone && held === null ? T.finish : T.climb));
+		} else if (held !== null) {
+			shown = Math.max(want, shown - dt * T.climb);
+		}
+		if (!first) {
+			update(dt);
+		}
+		// 다 받았어요: 불이 다 켜지고 손가락을 놓게 한 뒤 → 그 화면이 그려진 다음 엔진을 켜요
+		// (엔진이 켜지는 동안 브라우저가 그 일만 해서 화면이 멈춰요. 멈추는 순간이 "다 됨" 화면이면 끊김이 덜 보여요)
+		if (dlDone && held === null && shown >= 1 && !startAsked && !failed) {
+			if (calmAt < 0) {
+				calmAt = clock;
+				for (const g of groups) {
+					g.finger = null;
+				}
+			}
+			const flashing = pieces.some((p) => p.flash > 0);
+			if (clock - calmAt >= T.calm && !flashing && startWhen) {
+				startAsked = true;
+				startShown = shown;
+				const go = startWhen;
+				// 이 프레임이 화면에 나간 뒤에 (rAF 두 번 + 한 박자)
+				requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(go, 0)));
+			}
+		}
+		if (endAt < 0 && ready && held === null && shown >= 1 && !failed) {
+			endAt = clock;
+			if (!first) {
+				endQueue = groups.map((g, gi) => gi);
+				for (const g of groups) {
+					g.finger = null;
+				}
+			}
+			box.style.pointerEvents = 'none';    // 사라지는 동안 손가락은 게임으로
+		}
+		if (endAt >= 0) {
+			const k = (clock - endAt - (first ? 0 : T.fade_after)) / T.fade;
+			box.style.opacity = String(1 - Math.min(1, Math.max(0, k)));
+			if (k >= 1) {
+				gone = true;
+				box.remove();
+				return;
+			}
+		}
+		if (endQueue.length) {
+			const e0 = performance.now();
+			endRipple(endQueue.shift());     // 지난 프레임에 그린 모양으로
+			endMs = Math.max(endMs, performance.now() - e0);
+		}
+		const d0 = performance.now();
+		draw();
+		drawMs = drawMs ? drawMs * 0.9 + (performance.now() - d0) * 0.1 : performance.now() - d0;
+	}
+
+	function update(dt) {
+		// 불: 차례(order)대로 한 조각씩, 진행 1/조각 수 마다 하나
+		const n = pieces.length;
+		for (const p of pieces) {
+			p.lit = Math.min(1, Math.max(0, shown * n - p.order));
+			if (p.lit >= 1 && !p.done) {
+				p.done = true;
+				p.flash = T.flash;
+			}
+			p.flash = Math.max(0, p.flash - dt);
+		}
+		// 물 계산 (프레임이 들쭉날쭉해도 손맛이 같게 1/120초씩, drag.gd 와 같게)
+		acc = Math.min(acc + dt, 0.1);
+		while (acc >= PHYS.step) {
+			acc -= PHYS.step;
+			for (const g of groups) {
+				physStep(g, PHYS.step);
+			}
+			collide();
+		}
+		for (const g of groups) {
+			keepInside(g);
+			// 흔들림: 잡으면 0 으로, 놓으면 1 로 스르륵 (scripts/piece.gd 와 같게)
+			const goal = g.finger === null ? 1 : 0;
+			g.sway += Math.sign(goal - g.sway) * Math.min(Math.abs(goal - g.sway), dt / LOOK.sway_fade);
+		}
+		// 쉬는 무리끼리 겹치면 천천히 벌어져요 (끄는 무리는 안 밀어요 — 짝에 갖다 대는 걸 막지 않게)
+		for (let i = 0; i < groups.length; i++) {
+			for (let j = i + 1; j < groups.length; j++) {
+				const a = groups[i], b = groups[j];
+				if (a.finger !== null || b.finger !== null) {
+					continue;
+				}
+				let push = null, most = 0;
+				for (const ca of a.cells) {
+					for (const cb of b.cells) {
+						const pa = cellWorld(a, ca), pb = cellWorld(b, cb);
+						const vx = pb[0] - pa[0], vy = pb[1] - pa[1];
+						const d = Math.hypot(vx, vy);
+						if (T.gap - d > most + 0.5) {
+							most = T.gap - d;
+							push = d > 0.01 ? [vx / d, vy / d] : [1, 0];
+						}
+					}
+				}
+				if (push) {
+					const m = Math.min(most, T.sep_speed * dt) / 2;
+					a.c[0] -= push[0] * m;
+					a.c[1] -= push[1] * m;
+					b.c[0] += push[0] * m;
+					b.c[1] += push[1] * m;
+					keepInside(a);
+					keepInside(b);
+				}
+			}
+		}
+		for (let i = ripples.length - 1; i >= 0; i--) {
+			ripples[i].age += dt;
+			if (ripples[i].age >= ripples[i].life) {
+				ripples.splice(i, 1);
+			}
+		}
+	}
+
+	// ── 그리기 ──
+	function draw() {
+		const d = img.data;
+		d.set(base);
+		drawPct(d);
+		if (!first) {
+			paint(d);
+		}
+		ctx.putImageData(img, 0, 0);
+	}
+
+	// 무리 그림의 무게중심이 그림판 어디에 놓이나: 돌기 전 픽셀이 그림판 픽셀에 딱 맞게 정수만큼만 옮겨요 (+ 흔들림)
+	function renderOrigin(g, sx, sy) {
+		return [g.pivot[0] + rnd(g.c[0] - g.pivot[0]) + sx, g.pivot[1] + rnd(g.c[1] - g.pivot[1]) + sy];
+	}
+
+	// 돌린 무리 그림이 덮는 그림판 사각형
+	function rotRect(g, o, r) {
+		const b = g.buf;
+		const lx = g.pivot[0] - b.x0, ly = g.pivot[1] - b.y0;
+		const rad = Math.ceil(Math.hypot(Math.max(lx, b.w - lx), Math.max(ly, b.h - ly))) + 1;
+		return [Math.max(0, Math.floor(o[0] - rad)), Math.max(0, Math.floor(o[1] - rad)),
+			Math.min(W - 1, Math.ceil(o[0] + rad)), Math.min(H - 1, Math.ceil(o[1] + rad))];
+	}
+
+	function paint(d) {
+		mKind.fill(0);
+		mGid.fill(-1);
+		wB.fill(0);
+		const rects = [];
+		const t = clock;
+		const w8 = 6.2831853 / LOOK.sway_period;
+		anyLit = false;
+		anyWake = false;
+		groups.forEach((g, gi) => {
+			const b = g.buf;
+			// 켜짐: 조각마다 아래부터 차올라요 (무리 그림의 아래 = 조각이 기운 만큼 같이 기울어요)
+			b.lit.fill(0);
+			b.flash.fill(0);
+			g.cells.forEach((c, ci) => {
+				const p = c.piece;
+				if (p.lit <= 0) {
+					return;
+				}
+				anyLit = true;
+				const bc = b.cells[ci];
+				const cut = bc.yb + 1 - p.lit * (bc.yb - bc.ya + 1);
+				const fl = p.flash / T.flash;
+				for (let k = 0; k < bc.idx.length; k += 2) {
+					if (bc.idx[k + 1] >= cut) {
+						b.lit[bc.idx[k]] = 1;
+						b.flash[bc.idx[k]] = Math.max(b.flash[bc.idx[k]], fl);
+					}
+				}
+			});
+			// 흔들림 (scripts/piece.gd 와 같은 식) + 지금 각도
+			const sx = rnd(Math.sin(t * w8 + g.phase[0]) * LOOK.sway_px * g.sway);
+			const sy = rnd(Math.sin(t * w8 * 0.83 + g.phase[1]) * LOOK.sway_px * g.sway);
+			const r = g.turn + LOOK.sway_deg * Math.PI / 180 * Math.sin(t * w8 * 0.71 + g.phase[2]) * g.sway;
+			const o = renderOrigin(g, sx, sy);
+			const rr = rotRect(g, o, r);
+			const cs = Math.cos(r), sn = Math.sin(r);
+			let tx0 = W, ty0 = H, tx1 = -1, ty1 = -1;
+			for (let Y = rr[1]; Y <= rr[3]; Y++) {
+				for (let X = rr[0]; X <= rr[2]; X++) {
+					// 그림판 픽셀 가운데 → 무리 그림 자리 (무게중심을 축으로 거꾸로 돌려서, 가장 가까운 픽셀)
+					const qx = X + 0.5 - o[0], qy = Y + 0.5 - o[1];
+					const u = Math.floor(g.pivot[0] + qx * cs + qy * sn) - b.x0;
+					const v = Math.floor(g.pivot[1] - qx * sn + qy * cs) - b.y0;
+					if (u < 0 || v < 0 || u >= b.w || v >= b.h) {
+						continue;
+					}
+					const s = v * b.w + u;
+					const kind = b.kind[s];
+					if (kind === 0) {
+						continue;
+					}
+					const i = Y * W + X;
+					mKind[i] = kind;
+					mLit[i] = b.lit[s];
+					mFlash[i] = b.flash[s];
+					mTier[i] = b.tier[s];
+					mGid[i] = gi;
+					if (X < tx0) {
+						tx0 = X;
+					}
+					if (X > tx1) {
+						tx1 = X;
+					}
+					if (Y < ty0) {
+						ty0 = Y;
+					}
+					if (Y > ty1) {
+						ty1 = Y;
+					}
+				}
+			}
+			g.rect = [tx0, ty0, tx1, ty1];              // 다 됐을 때 물결이 지금 그린 모양을 찾을 곳 (꼭 맞는 사각형)
+			rects.push([rr[0] - 2, rr[1] - 2, rr[2] + 2, rr[3] + 2]);
+		});
+		// 물결 지도: 게임처럼 1초에 wake_fps 번만 움직여요 (일부러 끊겨 보이게)
+		const stepT = 1 / T.wake_fps;
+		for (const rp of ripples) {
+			const age = Math.floor(rp.age / stepT + 1e-6) * stepT;
+			if (rp.age < 0) {
+				continue;
+			}
+			const rr = 3 + rp.reach * (1 - Math.exp(-age / rp.tau));
+			const ring = Math.floor(Math.min(rr, rp.reach + 3));
+			const a = rp.bright * (1 - smooth(0.1, 1, age / rp.life));
+			if (a < 0.02) {
+				continue;
+			}
+			anyWake = true;
+			noteStep(age, rp);
+			for (let y = 0; y < rp.h; y++) {
+				const Y = rp.y0 + y;
+				if (Y < 0 || Y >= H) {
+					continue;
+				}
+				for (let x = 0; x < rp.w; x++) {
+					if (rp.dist[y * rp.w + x] !== ring) {
+						continue;
+					}
+					const X = rp.x0 + x;
+					if (X < 0 || X >= W) {
+						continue;
+					}
+					const i = Y * W + X;
+					if (a > wB[i]) {
+						wB[i] = a;
+						wT[i] = rp.tier;
+					}
+				}
+			}
+			rects.push([rp.x0 - 2, rp.y0 - 2, rp.x0 + rp.w + 2, rp.y0 + rp.h + 2]);
+		}
+		// 무리·물결 둘레만 색칠 (겹친 곳은 한 번만)
+		fid = (fid + 1) >>> 0;
+		for (const q of rects) {
+			const x0 = Math.max(0, q[0]), y0 = Math.max(0, q[1]), x1 = Math.min(W - 1, q[2]), y1 = Math.min(H - 1, q[3]);
+			for (let Y = y0; Y <= y1; Y++) {
+				for (let X = x0; X <= x1; X++) {
+					const i = Y * W + X;
+					if (stamp[i] === fid) {
+						continue;
+					}
+					stamp[i] = fid;
+					shade(d, X, Y, i);
+				}
+			}
+		}
+	}
+
+	// 검사용: 물결이 그려진 걸음 (같은 물결의 같은 걸음은 한 번만)
+	function noteStep(age, rp) {
+		if (rp.lastStep !== age) {
+			rp.lastStep = age;
+			rippleSteps.push(clock);
+			if (rippleSteps.length > 400) {
+				rippleSteps.shift();
+			}
+		}
+	}
+
+	// ── 색 (게임 셰이더와 같은 식, 단계마다 미리 섞어 둠) ──
+	const WHITE = [255, 255, 255];
+	function mixc(a, b, k) {
+		return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+	}
+	const C_WAKE = TIERS.map((t) => mixc(t, WHITE, LOOK.wake_white));           // 물결 줄 (shaders/wake_view.gdshader)
+	const C_GLOW1 = TIERS.map((t) => mixc(t, WHITE, 0.45));                      // 바로 옆 1px 빛
+	const C_GLOW2 = TIERS;                                                        // 2px 옅은 빛
+	const C_LINE_OFF = TIERS.map((t) => mixc([0, 0, 0], t, LOOK.off_bright));    // 꺼진 테두리 (shaders/piece_view.gdshader)
+	const C_FILL_OFF = TIERS.map((t) => mixc([0, 0, 0], t, LOOK.off_bright * 0.45));
+	const C_SEAM = TIERS.map((t) => mixc([0, 0, 0], t, 0.62));                   // 안쪽 이음매가 섞이는 색 (= 켜진 채움)
+	let anyLit = false, anyWake = false;
+	let wc = null, wa = 0;
+
+	function blend(d, o, rgb, a) {
+		if (a <= 0) {
+			return;
+		}
+		a = Math.min(1, a);
+		d[o] = d[o] * (1 - a) + rgb[0] * a;
+		d[o + 1] = d[o + 1] * (1 - a) + rgb[1] * a;
+		d[o + 2] = d[o + 2] * (1 - a) + rgb[2] * a;
+	}
+
+	// 이웃 (dx, dy) 의 칸 번호, 그림판 밖이면 -1
+	function nb(X, Y, dx, dy) {
+		const x = X + dx, y = Y + dy;
+		return (x < 0 || y < 0 || x >= W || y >= H) ? -1 : y * W + x;
+	}
+
+	const N1 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+	const N2 = [[2, 0], [-2, 0], [0, 2], [0, -2], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+
+	// 물결 색 → wc(색), wa(알파). 줄 = 흰색에 많이 섞음, 1px = 밝은 빛, 2px = 옅은 빛 (가장 밝은 줄의 단계 색)
+	function wakeAt(X, Y, i) {
+		wa = 0;
+		if (!anyWake) {
+			return;
+		}
+		if (wB[i] > 0) {
+			wc = C_WAKE[wT[i]];
+			wa = wB[i];
+			return;
+		}
+		let b1 = 0, t1 = 1, b2 = 0, t2 = 1;
+		for (let k = 0; k < 4; k++) {
+			const j = nb(X, Y, N1[k][0], N1[k][1]);
+			if (j >= 0 && wB[j] > b1) {
+				b1 = wB[j];
+				t1 = wT[j];
+			}
+		}
+		for (let k = 0; k < 8; k++) {
+			const j = nb(X, Y, N2[k][0], N2[k][1]);
+			if (j >= 0 && wB[j] > b2) {
+				b2 = wB[j];
+				t2 = wT[j];
+			}
+		}
+		const a1 = 0.75 * LOOK.wake_glow * b1, a2 = 0.38 * LOOK.wake_glow * b2;
+		if (a1 >= a2 && a1 > 0) {
+			wc = C_GLOW1[t1];
+			wa = a1;
+		} else if (a2 > 0) {
+			wc = C_GLOW2[t2];
+			wa = a2;
+		}
+	}
+
+	function shade(d, X, Y, i) {
+		const o = i * 4;
+		const kind = mKind[i];
+		if (kind === 0) {
+			// 물결 (조각 밑) → 켜진 조각 빛 (조각 바깥만, 빛나는 조각의 단계 색)
+			wakeAt(X, Y, i);
+			blend(d, o, wc, wa);
+			if (!anyLit) {
+				return;
+			}
+			let level = 0, fl = 0, tier = 1;
+			for (let k = 0; k < 4; k++) {
+				const j = nb(X, Y, N1[k][0], N1[k][1]);
+				if (j >= 0 && mKind[j] !== 0 && mLit[j] > 0.5) {
+					level = 2;
+					fl = Math.max(fl, mFlash[j]);
+					tier = Math.max(tier, mTier[j]);
+				}
+			}
+			if (level === 0) {
+				for (let k = 0; k < 8; k++) {
+					const j = nb(X, Y, N2[k][0], N2[k][1]);
+					if (j >= 0 && mKind[j] !== 0 && mLit[j] > 0.5) {
+						level = 1;
+						fl = Math.max(fl, mFlash[j]);
+						tier = Math.max(tier, mTier[j]);
+					}
+				}
+			}
+			if (level > 0) {
+				blend(d, o, level === 2 ? C_GLOW1[tier] : C_GLOW2[tier], (level === 2 ? 0.75 : 0.38) * LOOK.glow * (1 + 0.8 * fl));
+			}
+			return;
+		}
+		const lit = mLit[i];
+		const fl = mFlash[i];
+		if (kind === LINE) {
+			// 테두리 색 = 둘레(같은 무리) 중 가장 높은 단계 (게임 "색이 높은 애가 주위 색을 가지도록")
+			let tier = mTier[i];
+			let inner = true;
+			for (let k = 0; k < 4; k++) {
+				const j = nb(X, Y, N1[k][0], N1[k][1]);
+				if (j < 0 || mKind[j] === 0 || mGid[j] !== mGid[i]) {
+					inner = false;
+				} else if (mTier[j] > tier) {
+					tier = mTier[j];
+				}
+			}
+			const tc = TIERS[tier];
+			// 켜진 테두리 = 흰색에 많이 섞음 (반짝이는 동안 더 하얗게). 안쪽 이음매는 덜 밝게
+			const lw = LOOK.line_white + (1 - LOOK.line_white) * fl;
+			let r = tc[0] + (255 - tc[0]) * lw, g = tc[1] + (255 - tc[1]) * lw, b = tc[2] + (255 - tc[2]) * lw;
+			if (inner) {
+				const sm = C_SEAM[tier];
+				r = sm[0] + (r - sm[0]) * LOOK.seam;
+				g = sm[1] + (g - sm[1]) * LOOK.seam;
+				b = sm[2] + (b - sm[2]) * LOOK.seam;
+			}
+			const off = C_LINE_OFF[tier];
+			d[o] = off[0] + (r - off[0]) * lit;
+			d[o + 1] = off[1] + (g - off[1]) * lit;
+			d[o + 2] = off[2] + (b - off[2]) * lit;
+			return;
+		}
+		// 채움 (색유리): 밑에 물결이 비쳐 보여요
+		const tc = TIERS[mTier[i]];
+		const off = C_FILL_OFF[mTier[i]];
+		const k = 0.62 + 0.3 * fl;
+		const a = Math.min(1, LOOK.fill_alpha * (0.7 + 0.3 * lit));
+		d[o] = d[o] * (1 - a) + (off[0] + (tc[0] * k - off[0]) * lit) * a;
+		d[o + 1] = d[o + 1] * (1 - a) + (off[1] + (tc[1] * k - off[1]) * lit) * a;
+		d[o + 2] = d[o + 2] * (1 - a) + (off[2] + (tc[2] * k - off[2]) * lit) * a;
+		wakeAt(X, Y, i);
+		blend(d, o, wc, wa * (lit > 0.5 ? LOOK.under_raft : LOOK.under));
+	}
+
+	// ── 손가락 (게임처럼: 잡은 점이 손가락 쪽으로 물속에서 끌려와요) ──
+	function toCanvas(e) {
+		const r = cv.getBoundingClientRect();
+		return [(e.clientX - r.left) * W / r.width, (e.clientY - r.top) * H / r.height];
+	}
+
+	// 손가락 자리는 화면 끝에서 EDGE 안쪽까지만 (drag.gd)
+	function fingerAt(e) {
+		const p = toCanvas(e);
+		return [Math.min(W - PHYS.edge, Math.max(PHYS.edge, p[0])), Math.min(H - PHYS.edge, Math.max(PHYS.edge, p[1]))];
+	}
+
+	cv.addEventListener('pointerdown', function (e) {
+		e.preventDefault();
+		if (first || endAt >= 0 || calmAt >= 0) {
+			return;                     // 다 받은 뒤엔 안 잡혀요 (곧 넘어가요)
+		}
+		const p = toCanvas(e);
+		const g = pick(p);
+		lastPick = { at: p, group: g ? groups.indexOf(g) : -1 };
+		if (!g) {
+			return;
+		}
+		g.finger = e.pointerId;
+		g.free = g.c.slice();
+		g.slot = null;
+		g.grab = rot([p[0] - g.c[0], p[1] - g.c[1]], -g.turn);   // 가운데 → 잡은 점 (무리 각도 기준)
+		g.target = fingerAt(e);
+		groups.splice(groups.indexOf(g), 1);
+		groups.push(g);
+		try {
+			cv.setPointerCapture(e.pointerId);
+		} catch (err) {}
+	});
+	cv.addEventListener('pointermove', function (e) {
+		for (const g of groups) {
+			if (g.finger === e.pointerId) {
+				g.target = fingerAt(e);
+			}
+		}
+	});
+	function release(e) {
+		for (const g of groups.slice()) {
+			if (g.finger === e.pointerId) {
+				g.finger = null;
+				if (endAt < 0 && calmAt < 0) {    // 보이는 자리에서 짝 보기
+					trySnap(g);
+				}
+			}
+		}
+	}
+	cv.addEventListener('pointerup', release);
+	cv.addEventListener('pointercancel', release);
+
+	// ── 시작 ──
+	layout();
+	if (!first) {
+		scatter();
+		warmRipple();
+	}
+	window.addEventListener('resize', layout);
+	requestAnimationFrame(step);
+
+	// 게임(scripts/main.gd)이 첫 화면을 그리면 불러요
+	window.fpReady = function () {
+		ready = true;
+	};
+
+	api.progress = function (current, total) {
+		if (total > 0) {
+			dl = Math.min(1, current / total);
+		}
+	};
+	// 엔진·게임 파일을 다 받았어요. go = 엔진 켜기 (불이 다 켜지고 화면이 그려진 뒤 불러요)
+	api.downloaded = function (go) {
+		dlDone = true;
+		dl = 1;
+		startWhen = go;
+	};
+	api.started = function () {
+		// 엔진은 켜졌어요. 게임 신호를 기다리되, 너무 안 오면 그냥 넘어가요
+		started = true;
+		setTimeout(function () {
+			ready = true;
+		}, T.ready_wait * 1000);
+	};
+	api.fail = function () {
+		failed = true;
+	};
+	// 검사용 (tests/check_loader.py): 상태 보기·진행 묶기·느리게
+	api.state = function () {
+		return {
+			first: first, top: save ? save.top : 0, W: W, H: H, N: N, shown: shown, drawMs: drawMs, endMs: endMs,
+			dlDone: dlDone, startAsked: startAsked, startShown: startShown, started: started,
+			ready: ready, ending: endAt >= 0, gone: gone, clock: clock,
+			groups: groups.map((g) => ({
+				c: g.c.slice(), turn: g.turn, n: g.cells.length, v: g.v.slice(), w: g.w, held: g.finger !== null, target: g.target.slice(), dbg: g.dbg || '',
+				cells: g.cells.map((c) => [c.cx, c.cy, c.edges.slice(), pieces.indexOf(c.piece), cellWorld(g, c)]),
+			})),
+			lit: pieces.map((p) => p.lit), order: pieces.map((p) => p.order), tiers: pieces.map((p) => p.tier), homes: pieces.map((p) => p.home.slice()),
+			ripples: ripples.length, rippleSteps: rippleSteps.slice(), lastPick: lastPick,
+		};
+	};
+	api.snapBetween = function (pa, pb) {
+		const ga = groups.find((g) => g.cells.some((c) => pieces.indexOf(c.piece) === pa));
+		const gb = groups.find((g) => g.cells.some((c) => pieces.indexOf(c.piece) === pb));
+		return !!(ga && gb && ga !== gb && (snapAt(ga, gb) || snapAt(gb, ga)));
+	};
+	api.hold = function (p) {
+		held = p;
+	};
+	api.client = function (x, y) {
+		const r = cv.getBoundingClientRect();
+		return [r.left + x * r.width / W, r.top + y * r.height / H];
+	};
+	api.shape = function (edges) {
+		const out = [];
+		for (const [k, v] of shapePixels(edges)) {
+			out.push(k + ':' + v);
+		}
+		return out.sort();
+	};
+	return api;
+}());
+
+(function () {
+	const statusNotice = document.getElementById('status-notice');
+
+	function displayFailureNotice(err) {
+		console.error(err);
+		fpLoader.fail();
+		let text = 'An unknown error occurred.';
+		if (err instanceof Error) {
+			text = err.message;
+		} else if (typeof err === 'string') {
+			text = err;
+		}
+		while (statusNotice.lastChild) {
+			statusNotice.removeChild(statusNotice.lastChild);
+		}
+		text.split('\n').forEach((line) => {
+			statusNotice.appendChild(document.createTextNode(line));
+			statusNotice.appendChild(document.createElement('br'));
+		});
+		statusNotice.style.display = 'block';
+	}
+
+	// [버거 팔자 수정] 집 와이파이에서 폰으로 볼 때 http 주소를 쓰면
+	// 브라우저가 "보안 연결"로 안 쳐주는데, Godot은 그걸 이유로 실행을 막습니다.
+	// 이 항목만 빼고 검사합니다. 소리는 위 [버거 팔자 수정 2] 덕분에 http 에서도 납니다.
+	const missing = Engine.getMissingFeatures({
+		threads: GODOT_THREADS_ENABLED,
+	}).filter(function (f) {
+		return !/secure context/i.test(f);
+	});
+
+	if (missing.length !== 0) {
+		if (GODOT_CONFIG['serviceWorker'] && GODOT_CONFIG['ensureCrossOriginIsolationHeaders'] && 'serviceWorker' in navigator) {
+			let serviceWorkerRegistrationPromise;
+			try {
+				serviceWorkerRegistrationPromise = navigator.serviceWorker.getRegistration();
+			} catch (err) {
+				serviceWorkerRegistrationPromise = Promise.reject(new Error('Service worker registration failed.'));
+			}
+			// There's a chance that installing the service worker would fix the issue
+			Promise.race([
+				serviceWorkerRegistrationPromise.then((registration) => {
+					if (registration != null) {
+						return Promise.reject(new Error('Service worker already exists.'));
+					}
+					return registration;
+				}).then(() => engine.installServiceWorker()),
+				// For some reason, `getRegistration()` can stall
+				new Promise((resolve) => {
+					setTimeout(() => resolve(), 2000);
+				}),
+			]).then(() => {
+				// Reload if there was no error.
+				window.location.reload();
+			}).catch((err) => {
+				console.error('Error while registering service worker:', err);
+			});
+		} else {
+			// Display the message as usual
+			const missingMsg = 'Error\nThe following features required to run Godot projects on the Web are missing:\n';
+			displayFailureNotice(missingMsg + missing.join('\n'));
+		}
+	} else {
+		// engine.startGame() 을 둘로 나눠요 (손질 1 A-7): ① 엔진·게임 파일 받기 ② 로딩 화면이 "다 됨"을 그린 뒤 엔진 켜기.
+		// startGame 은 받자마자 바로 켜서, 켜지는 동안(폰에서 몇 초 멈춤) 로딩 화면이 90% 에서 멈춰 보였어요.
+		// 나눈 방법은 Godot 4.7 index.js 의 startGame 그대로 (--main-pack 을 앞에 붙임)
+		const exe = GODOT_CONFIG['executable'];
+		const pack = GODOT_CONFIG['mainPack'] || exe + '.pck';
+		const args = ['--main-pack', pack].concat(GODOT_CONFIG['args'] || []);
+		Promise.all([engine.init(exe), engine.preloadFile(pack, pack)]).then(function () {
+			fpLoader.downloaded(function () {
+				engine.start({ 'args': args }).then(function () {
+					fpLoader.started();
+				}, displayFailureNotice);
+			});
+		}, displayFailureNotice);
+	}
+}());
+		</script>
+	</body>
+</html>
+
